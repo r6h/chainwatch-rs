@@ -18,25 +18,69 @@ pub async fn watch() -> Result<()> {
 }
 
 #[derive(Debug)]
-struct FakeBlock {
+struct RawBlock {
     number: u64,
     hash: String,
+    raw_payload: String,
+}
+
+#[derive(Debug)]
+struct DecodedBlock {
+    number: u64,
+    hash: String,
+    tx_count: usize,
+}
+
+#[derive(Debug)]
+struct AnalysisResult {
+    block_number: u64,
+    summary: String,
 }
 
 pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let (tx, mut rx) = mpsc::channel::<FakeBlock>(1024);
 
-    let consumer = tokio::spawn(async move {
-        while let Some(block) = rx.recv().await {
-            println!("analyzing fake block: #{}, hash={}", block.number, block.hash);
+    let (raw_tx, raw_rx) = mpsc::channel::<RawBlock>(1024);
+    let (decoded_tx, decoded_rx) = mpsc::channel::<DecodedBlock>(1024);
+
+    let decoder = tokio::spawn(async move {
+        let mut raw_rx = raw_rx;
+        let decoded_tx = decoded_tx;
+
+        while let Some(raw_block) = raw_rx.recv().await {
+            sleep(Duration::from_millis(100)).await;
+
+            let decoded = DecodeBlock {
+                number: raw_block.number,
+                hash: raw_block.hash,
+                tx_count: raw_block.raw_payload.len() % 20,
+            };
+
+            decoded_tx.send(decoded).await.unwrap();
+        }
+    });
+
+    let analyzer = tokio::spawn(async move {
+        let mut decoded_rx = decoded_rx;
+
+        while let Some(block) = decoded_rx.recv().await {
+            let result = AnalysisResult {
+                block_number: block.number,
+                summary: format!(
+                    "block {} has {} fake transactions",
+                    block.number,
+                    block.tx_count
+                ),
+            };
+
+            println!("analysis result: {:?}", result);
         }
     });
 
     let mut handles = Vec::new();
 
     for block_number in from..=to {
-        let tx = tx.clone();
+        let raw_tx = raw_tx.clone();
         let semaphore = semaphore.clone();
 
         let handle = tokio::spawn(async move {
@@ -44,23 +88,30 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
 
             sleep(Duration::from_millis(300)).await;
 
-            let block = FakeBlock {
+            let raw_block = RawBlock {
                 number: block_number,
                 hash: format!("0xfakehash{block_number}"),
+                raw_payload: format!("fake-json-payload-for-block-{block_number}"),
             };
 
-            tx.send(block).await.unwrap();
+            raw_tx.send(block).await.unwrap();
         });
 
         handles.push(handle);
+    }
 
-        drop(tx);
+    drop(raw_tx);
 
-        for handle in handles {
-            handle.await?;
-        }
+    for handle in handles {
+        handle.await?;
+    }
 
-        consumer.await?;
+    decoder.await?;
+    analyzer.await?;
+
+    Ok(())
+}
+
 pub async fn tx(hash: String) -> Result<()> {
     info!(hash = hash, "fetching fake transaction");
 
