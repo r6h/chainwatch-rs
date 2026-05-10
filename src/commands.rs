@@ -1,11 +1,13 @@
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::{
-    sync::Semaphore,
-    sync::mpsc,
+    sync::{Semaphore, mpsc},
     time::{Duration, sleep},
 };
 use tracing::info;
+
+use crate::types::{AnalysisResult, DecodedBlock, RawBlock};
+
 pub async fn watch() -> Result<()> {
     info!("Starting fake watcher");
 
@@ -15,26 +17,6 @@ pub async fn watch() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RawBlock {
-    number: u64,
-    hash: String,
-    raw_payload: String,
-}
-
-#[derive(Debug)]
-struct DecodedBlock {
-    number: u64,
-    hash: String,
-    tx_count: usize,
-}
-
-#[derive(Debug)]
-struct AnalysisResult {
-    block_number: u64,
-    summary: String,
 }
 
 pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
@@ -50,14 +32,16 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
         while let Some(raw_block) = raw_rx.recv().await {
             sleep(Duration::from_millis(100)).await;
 
-            let decoded = DecodeBlock {
+            let decoded = DecodedBlock {
                 number: raw_block.number,
                 hash: raw_block.hash,
                 tx_count: raw_block.raw_payload.len() % 20,
             };
 
-            decoded_tx.send(decoded).await.unwrap();
+            decoded_tx.send(decoded).await?;
         }
+
+        Ok::<(), anyhow::Error>(())
     });
 
     let analyzer = tokio::spawn(async move {
@@ -67,14 +51,18 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
             let result = AnalysisResult {
                 block_number: block.number,
                 summary: format!(
-                    "block {} has {} fake transactions",
-                    block.number,
-                    block.tx_count
+                    "block {} with hash {} has {} fake transactions",
+                    block.number, block.hash, block.tx_count
                 ),
             };
 
-            println!("analysis result: {:?}", result);
+            println!(
+                "analysis result: block={}, summary={}",
+                result.block_number, result.summary
+            );
         }
+
+        Ok::<(), anyhow::Error>(())
     });
 
     let mut handles = Vec::new();
@@ -84,9 +72,10 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
         let semaphore = semaphore.clone();
 
         let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire_owned().await.unwrap();
+            let _permit = semaphore.acquire_owned().await?;
 
-            sleep(Duration::from_millis(300)).await;
+            let delay = 50 + (block_number % 5) * 100;
+            sleep(Duration::from_millis(delay)).await;
 
             let raw_block = RawBlock {
                 number: block_number,
@@ -94,7 +83,9 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
                 raw_payload: format!("fake-json-payload-for-block-{block_number}"),
             };
 
-            raw_tx.send(block).await.unwrap();
+            raw_tx.send(raw_block).await?;
+
+            Ok::<(), anyhow::Error>(())
         });
 
         handles.push(handle);
@@ -103,11 +94,11 @@ pub async fn blocks(from: u64, to: u64, concurrency: usize) -> Result<()> {
     drop(raw_tx);
 
     for handle in handles {
-        handle.await?;
+        handle.await??;
     }
 
-    decoder.await?;
-    analyzer.await?;
+    decoder.await??;
+    analyzer.await??;
 
     Ok(())
 }
