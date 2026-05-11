@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod pipeline;
 mod types;
 
 use anyhow::Result;
