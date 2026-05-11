@@ -5,7 +5,7 @@ use tokio::{
     time::{Duration, sleep},
 };
 
-use crate::types::{RawBlock};
+use crate::types::RawBlock;
 
 pub async fn fetch_fake_block(
     block_number: u64,
@@ -23,7 +23,7 @@ pub async fn fetch_fake_block(
         raw_payload: format!("fake-json-payload-for-block-{block_number}"),
     };
 
-    raw_tx.send(raw_block).await=?;
+    raw_tx.send(raw_block).await?;
 
     Ok(())
 }
